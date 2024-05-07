@@ -1,0 +1,118 @@
+# CSC581 Module 8: Portfolio Project
+# Name: Soumyo Ghosh 340047
+# Date: May 12th, 2024
+
+# Necessary Imports
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, DateType
+from pyspark.sql.functions import col
+import matplotlib.pyplot as plt
+from pyspark.ml.stat import Correlation
+from pyspark.ml.feature import VectorAssembler
+import seaborn as sns
+
+# File location and type
+file_location = "/FileStore/tables/AB_US_2020.csv"
+file_type = "csv"
+
+# CSV option
+first_row_is_header = "true"
+delimiter = ","
+
+# Defining the schema
+schema = StructType([
+    StructField("id", IntegerType(), True),
+    StructField("name", StringType(), True),
+    StructField("host_id", IntegerType(), True),
+    StructField("host_name", StringType(), True),
+    StructField("neighbourhood_group", StringType(), True),
+    StructField("neighborhood", StringType(), True),
+    StructField("latitude", DoubleType(), True),
+    StructField("longitude", DoubleType(), True),
+    StructField("room_type", StringType(), True),
+    StructField("price", DoubleType(), True),
+    StructField("minimum_nights", IntegerType(), True),
+    StructField("number_of_reviews", IntegerType(), True),
+    StructField("last_review", DateType(), True),
+    StructField("reviews_per_month", DoubleType(), True),
+    StructField("calculated_host_listings_count", IntegerType(), True),
+    StructField("availability_365", IntegerType(), True),
+    StructField("city", StringType(), True)
+])
+
+# Read the CSV file with the defined schema
+airbnb_dataset = spark.read.format(file_type) \
+  .option("header", first_row_is_header) \
+  .option("sep", delimiter) \
+  .schema(schema) \
+  .load(file_location)
+
+# Display the DataFrame
+display(airbnb_dataset)
+airbnb_dataset.describe().display()
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# Data visualization
+# .select() to drop null values
+numerical_columns = ['latitude', 'longitude', 'price', 'minimum_nights', 'number_of_reviews', 'reviews_per_month', 'calculated_host_listings_count', 'availability_365']
+filtered_dataset = airbnb_dataset.select(*numerical_columns).dropna()
+
+# Calculate quartiles
+quantiles = filtered_dataset.approxQuantile("price", [0.25, 0.75], 0.05)
+
+# Calculate inter-quartile range and define lower and upper bounds for outliers
+q1 = quantiles[0]
+q3 = quantiles[1]
+iqr = q3 - q1
+lower_bound = q1 - 1.5 * iqr
+upper_bound = q3 + 1.5 * iqr
+
+# .filter() to filter out outliers
+filtered_dataset = filtered_dataset.filter((col("price") >= lower_bound) & (col("price") <= upper_bound))
+
+# Histogram of "price" distribution
+price_distribution = filtered_dataset.select("price").rdd.flatMap(lambda x: x).collect()
+plt.hist(price_distribution, bins=50, color='red', edgecolor='black')
+plt.title('Price Distribution (Outliers Removed)')
+plt.xlabel('Price')
+plt.ylabel('Frequency')
+plt.show()
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# Correlation Analytics
+
+# Filter out rows with None values in numerical columns
+numerical_columns = ['latitude', 'longitude', 'price', 'minimum_nights', 'number_of_reviews', 'reviews_per_month', 'calculated_host_listings_count', 'availability_365']
+filtered_dataset = airbnb_dataset.select(*numerical_columns).dropna()
+
+# Assemble features into a single vector
+assembler = VectorAssembler(inputCols=numerical_columns, outputCol='features')
+vector_df = assembler.transform(filtered_dataset).select('features')
+
+# Calculate correlation matrix
+correlation_matrix = Correlation.corr(vector_df, 'features').head()
+correlation_matrix = correlation_matrix[0].toArray()
+
+# Display correlation matrix
+plt.figure(figsize=(10, 8))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', xticklabels=numerical_columns, yticklabels=numerical_columns)
+plt.title('Correlation Matrix')
+plt.show()
+
+# Save table to delta
+# Create a view or table
+
+temp_table_name = "AB_US_2020_csv"
+
+airbnb_dataset.createOrReplaceTempView(temp_table_name)
+
+
+%sql
+/* Query the created temp table in a SQL cell */
+
+select * from `AB_US_2020_csv`
+
+
+# permanent table saved
+permanent_table_name = "AB_US_2020_csv"
+
+airbnb_dataset.write.format("parquet").saveAsTable(permanent_table_name)
